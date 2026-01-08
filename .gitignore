@@ -1,3 +1,6 @@
 .claude/
 bmad/
 _bmad/
+
+# bv (beads viewer) local config and caches
+.bv/
