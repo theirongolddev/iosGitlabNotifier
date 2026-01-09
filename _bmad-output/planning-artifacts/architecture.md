@@ -21,40 +21,40 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 ### Requirements Overview
 
 **Functional Requirements:**
-45 requirements spanning 12 functional areas. The core flow is: authenticate with GitLab → discover items → manage watch list → receive notifications → triage via deep links.
+Requirements spanning 10 functional areas. The core flow is: authenticate with GitLab → discover items → manage watch list → receive notifications via ntfy → triage via deep links.
 
 Key FR clusters:
 - **Authentication & Connection** (6 FRs): PAT and OAuth support, connection validation, re-auth handling
 - **Item Discovery** (7 FRs): List issues/MRs by involvement type, filtering, metadata display
-- **Watch List** (5 FRs): Watch/unwatch toggle, view watch list, cross-device sync, mute/snooze (FR44)
+- **Watch List** (5 FRs): Watch/unwatch toggle, view watch list, server-side sync, mute/snooze (FR44)
 - **GitLab Notification Alignment** (2 FRs): Import GitLab subscriptions, mirror subscription state
-- **Device & Server Registration** (2 FRs): APNs device registration, device management
+- **ntfy Configuration** (2 FRs): Topic setup, subscription management
 - **Push Notifications** (5 FRs): Rich notifications with actor/action/item context, new-tag detection
 - **Notification Actions** (3 FRs): Watch/Dismiss quick actions, deep linking to GitLab
 - **Notification History** (1 FR): View notification history for watched items
 - **System Status & Feedback** (3 FRs): Connection status display, operation failure feedback, actionable errors
 - **Offline & Sync** (5 FRs): Cached data display, offline indicator, queued changes, manual sync
-- **macOS Menu Bar** (5 FRs): Icon, badge, dropdown, Focus mode integration
-- **Diagnostics & Trust** (1 FR): View polling/sync status details (FR45)
+- **Diagnostics & Trust** (2 FRs): View polling/sync status details (FR45), test notification (FR51)
 
 **Non-Functional Requirements:**
 - Performance: < 2 minute notification latency, 1-2 minute server polling
 - Reliability: Near-zero missed notifications on watched items (> 99% - CRITICAL for /todos + per-resource polling, /events as fallback)
-- Security: Platform Keychain for credentials, TLS for all communication, no plaintext logging
-- Integration: GitLab API rate limit handling, APNs token refresh and error handling
-- Resource: iOS/macOS battery best practices, minimal background network activity
+- Security: Server-side encrypted credential storage, TLS for all communication, no plaintext logging
+- Integration: GitLab API rate limit handling, ntfy.sh delivery error handling
+- Resource: PWA minimizes client-side resource usage (server handles all polling)
 
 **Scale & Complexity:**
-- Primary domain: Mobile (iOS/macOS) + Backend (Node.js notification server)
+- Primary domain: PWA + Backend (Node.js notification server) + ntfy.sh
 - Complexity level: Low-Medium
-- Estimated architectural components: 5 (iOS app, macOS app, Shared Swift package, Notification server, APNs integration)
+- Estimated architectural components: 4 (PWA, Notification server, Shared TypeScript, ntfy.sh integration)
 
 ### Technical Constraints & Dependencies
 
 - **Self-hosted GitLab support**: Architecture must handle arbitrary instance URLs with user-provided credentials
-- **APNs requirement**: Production push notifications require Apple Developer Program enrollment
+- **No Apple Developer account**: Uses ntfy.sh for push notifications - no $99/year cost
 - **Server deployment**: User must host the notification server - single point of failure requiring resilience strategy (health checks, restart policies, monitoring)
-- **Platform minimums**: iOS 17+ / macOS 14+ (enables @Observable and modern SwiftUI features)
+- **PWA limitations**: PWA on iOS cannot receive push directly; ntfy app handles push delivery
+- **Development environment**: Linux-based (no macOS/Xcode required)
 - **GitLab API strategy**:
   - `GET /todos` for items needing direct attention (mentions, review requests, assignments)
   - **Primary for watched items:** per-resource polling of notes/discussions (comments + system notes when available)
@@ -71,13 +71,13 @@ Key FR clusters:
 
 ### Cross-Cutting Concerns Identified
 
-1. **Authentication flow**: Token storage (Keychain), refresh, expiry detection - affects both clients and server
+1. **Authentication flow**: JWT token storage (localStorage), refresh, expiry detection - server stores GitLab credentials
 2. **Watch list synchronization**: Last-write-wins conflict resolution, server-side storage
-3. **Error handling & user feedback**: Shared layer handles retries/auth; consistent fatal error presentation across platforms
-4. **Offline behavior**: All clients need cached data, queued actions, clear offline indicators
-5. **Push notification reliability**: Delivery confirmation via receipt flow, retry logic, Prometheus metrics for monitoring
-6. **Observability & Monitoring**: Server health metrics, polling success rate, APNs delivery rate, alerting on degradation
-7. **Shared code boundaries**: Explicit definition of what lives in Swift package vs platform-specific targets
+3. **Error handling & user feedback**: React Query handles retries/auth; consistent error presentation in PWA
+4. **Offline behavior**: PWA needs cached data via React Query, queued actions, clear offline indicators
+5. **Push notification reliability**: ntfy.sh delivery, retry logic, Prometheus metrics for monitoring
+6. **Observability & Monitoring**: Server health metrics, polling success rate, ntfy delivery rate, alerting on degradation
+7. **Shared code boundaries**: Explicit definition of what lives in shared TypeScript package vs PWA-specific code
 
 ---
 
@@ -88,7 +88,8 @@ Key FR clusters:
 | Domain | Technology | Starter Approach |
 |--------|------------|------------------|
 | Notification Server | Fastify + TypeScript | DriftOS/fastify-starter template |
-| iOS/macOS Apps | Swift + SwiftUI | Xcode Multiplatform template + Swift Package |
+| PWA Client | React + TypeScript + Vite | Manual setup with pnpm workspaces |
+| Shared Code | TypeScript | Monorepo package (`packages/shared`) |
 
 ---
 
@@ -131,18 +132,18 @@ model User {
   gitlabVersion      String?  // Best-effort version string (self-hosted instances vary)
   capabilitiesJson   String?  // Stored capability discovery results for this instance/user
   createdAt          DateTime @default(now())
-  devices            DeviceToken[]
+  ntfyConfig         NtfyConfig?
   watchedItems       WatchedItem[]
   pollState          PollState?
   notifiedItems      NotifiedItem[]
 }
 
-model DeviceToken {
+model NtfyConfig {
   id        String   @id @default(uuid())
-  token     String   @unique
-  platform  String   // "ios" | "macos"
+  topic     String   @unique  // Unique ntfy topic for this user (e.g., "gitlab-notifier-{uuid}")
+  serverUrl String   @default("https://ntfy.sh")  // Can be self-hosted ntfy server
   active    Boolean  @default(true)
-  userId    String
+  userId    String   @unique
   user      User     @relation(fields: [userId], references: [id])
   createdAt DateTime @default(now())
 }
@@ -246,7 +247,7 @@ model NotificationOutbox {
   id             String    @id @default(uuid())
   notificationId String    @unique
   userId         String
-  payloadJson    String    // Full APNs payload for retry
+  payloadJson    String    // Full ntfy payload for retry
   createdAt      DateTime  @default(now())
   status         String    @default("queued") // queued|sending|sent|dead
   lastError      String?
@@ -261,10 +262,10 @@ model NotificationAttempt {
   id             String   @id @default(uuid())
   notificationId String
   outbox         NotificationOutbox @relation(fields: [notificationId], references: [notificationId])
-  deviceTokenId  String
   attemptedAt    DateTime @default(now())
   result         String   // success|retryable_error|permanent_error
-  apnsId         String?  // From APNs response when available
+  ntfyMessageId  String?  // From ntfy response when available
+  httpStatus     Int?     // HTTP status code from ntfy
   error          String?
 
   @@index([notificationId, attemptedAt])
@@ -299,9 +300,9 @@ ON USER REGISTRATION (first poll):
 
 **Testing Notes:**
 - Vitest included for unit/integration tests
-- Mock APNs endpoint via simple Fastify route
+- Mock ntfy endpoint via simple Fastify route for testing notification delivery
 - HTTP-level mocking with nock/msw for GitLab API
-- Integration test: Poll mock GitLab → detect change → verify APNs payload
+- Integration test: Poll mock GitLab → detect change → verify ntfy payload
 
 ---
 
@@ -351,58 +352,46 @@ Refresh JWT token.
 }
 ```
 
-#### POST /pair/start
-Creates a short-lived pairing code displayed on an already-authenticated device.
-Enables secure multi-device setup without re-entering credentials.
+#### GET /ntfy
+Get current ntfy configuration for the user.
 ```json
-// Request (requires valid JWT)
-{}
-
 // Response
 {
-  "pairingCode": "ABC123",        // 6-char alphanumeric, expires in 5 minutes
-  "expiresAt": "2026-01-07T10:35:00Z"
+  "topic": "gitlab-notifier-550e8400",
+  "serverUrl": "https://ntfy.sh",
+  "subscribeUrl": "https://ntfy.sh/gitlab-notifier-550e8400",
+  "active": true
 }
 ```
 
-#### POST /pair/exchange
-Exchanges pairing code for a device-scoped refresh token + JWT.
+#### POST /ntfy
+Configure or update ntfy settings. Generates unique topic on first call.
 ```json
 // Request
 {
-  "pairingCode": "ABC123",
-  "platform": "macos",
-  "deviceName": "MacBook Pro"
+  "serverUrl": "https://ntfy.sh"  // Optional, defaults to ntfy.sh
 }
 
 // Response
 {
-  "token": "eyJhbGciOiJIUzI1NiIs...",      // Device-scoped JWT
-  "refreshToken": "drt_xxxxxxxxxxxxxxxx",  // Device-scoped refresh token
-  "deviceId": "550e8400-e29b-41d4-a716-446655440002",
-  "expiresAt": "2026-01-14T12:00:00Z"
+  "topic": "gitlab-notifier-550e8400",
+  "serverUrl": "https://ntfy.sh",
+  "subscribeUrl": "https://ntfy.sh/gitlab-notifier-550e8400",
+  "active": true,
+  "instructions": "Subscribe to this topic in the ntfy app to receive notifications"
 }
 ```
 
-#### POST /devices
-Register APNs device token. Requires device-scoped JWT.
+#### POST /ntfy/test
+Send a test notification to verify ntfy configuration.
 ```json
-// Request (requires device-scoped JWT)
-{
-  "apnsToken": "a94b25e7f9d8c3b1a...",
-  "platform": "ios",
-  "appVersion": "1.0.0"
-}
-
 // Response
 {
-  "deviceId": "550e8400-e29b-41d4-a716-446655440001",
-  "registered": true
+  "sent": true,
+  "topic": "gitlab-notifier-550e8400",
+  "messageId": "abc123"
 }
 ```
-
-#### DELETE /devices/:id
-Unregister device. Revokes device-scoped tokens for this device.
 
 #### GET /items
 List user's GitLab items (issues/MRs).
@@ -534,7 +523,7 @@ Record notification delivery receipt.
 ```
 
 #### GET /notifications
-List recent notifications (for in-app history + macOS dropdown).
+List recent notifications (for in-app history).
 Supports pagination and filtering by time.
 ```json
 // Response
@@ -588,12 +577,12 @@ Surfaces last poll times, cursor positions, pending notifications, and recent de
   "notifications": {
     "pendingOutbox": 0,
     "sentLast24h": 12,
-    "deliveredLast24h": 11,
-    "deliveryRate": 0.917
+    "deliveryRate": 1.0
   },
-  "devices": {
-    "active": 2,
-    "platforms": ["ios", "macos"]
+  "ntfy": {
+    "configured": true,
+    "topic": "gitlab-notifier-550e8400",
+    "serverUrl": "https://ntfy.sh"
   }
 }
 ```
@@ -603,92 +592,109 @@ Prometheus metrics (no auth required).
 
 #### POST /notifications/test
 Enqueue a test notification through the normal outbox pipeline (requires auth).
-Verifies end-to-end push delivery health. Goes through the same outbox → APNs flow as real notifications.
+Verifies end-to-end push delivery health. Goes through the same outbox → ntfy flow as real notifications.
 ```json
 // Request
-{
-  "deviceId": "optional-specific-device-or-all"  // Omit to send to all active devices
-}
+{}
 
 // Response
 {
   "queued": true,
   "notificationId": "550e8400-e29b-41d4-a716-446655440099",
-  "targetDevices": 2
+  "topic": "gitlab-notifier-550e8400"
 }
 ```
 
 ---
 
-### Clients: Xcode Multiplatform + Local Swift Package
+### Client: Progressive Web App (PWA)
 
-**Project Structure:**
+**Monorepo Project Structure:**
 ```
 iosGitlabNotifier/
-├── iosGitlabNotifier.xcworkspace
-├── iOS/
-│   ├── iosGitlabNotifierApp.swift
-│   ├── AppDelegate.swift
-│   └── Views/
-├── iOS-NotificationExtension/           # Notification Service Extension
-│   ├── NotificationService.swift        # Rich notification processing
-│   └── Info.plist
-├── macOS/
-│   ├── iosGitlabNotifierApp.swift
-│   ├── MenuBarManager.swift
-│   └── Views/
-├── Shared/                               # Shared SwiftUI views
-│   ├── NotificationListView.swift        # Used by both iOS and macOS
-│   ├── ItemRowView.swift
-│   └── WatchToggleView.swift
-└── GitLabNotifierKit/                    # Local Swift Package
-    ├── Package.swift
-    └── Sources/GitLabNotifierKit/
-        ├── Models/
-        │   ├── GitLabItem.swift
-        │   ├── WatchedItem.swift
-        │   └── NotificationPayload.swift
-        ├── API/
-        │   ├── GitLabClient.swift
-        │   ├── GitLabEndpoints.swift
-        │   ├── ServerAPIClient.swift
-        │   └── AuthenticationManager.swift
-        ├── Services/
-        │   ├── WatchListManager.swift
-        │   ├── DeviceManager.swift
-        │   └── KeychainService.swift
-        └── Utilities/
-            ├── DateFormatting.swift
-            └── DataExtensions.swift
+├── packages/
+│   ├── server/                  # Fastify notification server
+│   │   ├── src/
+│   │   │   ├── routes/          # API endpoints
+│   │   │   ├── services/        # GitLab poller, ntfy sender
+│   │   │   └── jobs/            # Background polling
+│   │   ├── prisma/
+│   │   └── package.json
+│   │
+│   ├── web/                     # React PWA
+│   │   ├── src/
+│   │   │   ├── components/      # React components
+│   │   │   │   ├── ItemList.tsx
+│   │   │   │   ├── WatchToggle.tsx
+│   │   │   │   └── NotificationHistory.tsx
+│   │   │   ├── pages/           # Route pages
+│   │   │   │   ├── Dashboard.tsx
+│   │   │   │   ├── Settings.tsx
+│   │   │   │   └── Setup.tsx
+│   │   │   ├── stores/          # Zustand stores
+│   │   │   │   ├── authStore.ts
+│   │   │   │   └── watchListStore.ts
+│   │   │   ├── api/             # React Query hooks
+│   │   │   │   ├── useItems.ts
+│   │   │   │   ├── useWatchList.ts
+│   │   │   │   └── useNotifications.ts
+│   │   │   └── lib/
+│   │   │       └── apiClient.ts
+│   │   ├── public/
+│   │   │   ├── manifest.json    # PWA manifest
+│   │   │   └── sw.js            # Service worker
+│   │   ├── index.html
+│   │   └── package.json
+│   │
+│   └── shared/                  # Shared TypeScript
+│       ├── src/
+│       │   ├── types/           # API types
+│       │   │   ├── gitlab.ts
+│       │   │   ├── watchList.ts
+│       │   │   └── notifications.ts
+│       │   └── validation/      # Zod schemas
+│       │       └── schemas.ts
+│       └── package.json
+│
+├── package.json                 # Workspace root
+├── pnpm-workspace.yaml
+└── turbo.json                   # Turborepo config (optional)
 ```
 
 **Architectural Decisions:**
 
 | Category | Decision |
 |----------|----------|
-| Language | Swift 5.9+ |
-| UI Framework | SwiftUI |
-| Minimum iOS | iOS 17+ |
-| Minimum macOS | macOS 14+ |
-| Deployment Target | Latest stable OS at implementation time (keep aligned with current Xcode), with minimums above |
-| Code Sharing | Local Swift Package (GitLabNotifierKit) |
-| Credential Storage | Keychain Services via shared `KeychainService` |
-| Local Persistence | SwiftData |
-| Networking | URLSession (native) |
-| State Management | @Observable + Environment |
+| Language | TypeScript 5.x |
+| UI Framework | React 18+ |
+| Bundler | Vite |
+| Styling | Tailwind CSS |
+| State Management | Zustand + React Query |
+| HTTP Client | fetch (via React Query) |
+| Local Storage | React Query cache + localStorage |
+| Routing | React Router (or TanStack Router) |
+| Testing | Vitest + Playwright |
 
-**Platform-Specific Responsibilities:**
+**PWA Features:**
 
-| Component | iOS | macOS | Shared Package |
-|-----------|-----|-------|----------------|
-| Push handling | AppDelegate | NSApplicationDelegate | - |
-| UI chrome | TabView/NavigationStack | MenuBarExtra | - |
-| GitLab API | - | - | GitLabClient |
-| Server API | - | - | ServerAPIClient |
-| Watch list logic | - | - | WatchListManager |
-| Device registration | - | - | DeviceManager |
-| Keychain access | - | - | KeychainService |
-| Models | - | - | All models |
+| Feature | Implementation |
+|---------|----------------|
+| Installable | manifest.json with icons, start_url, display: standalone |
+| Offline indicator | Service worker + navigator.onLine |
+| Home screen icon | manifest.json icons array |
+| Responsive | Tailwind CSS mobile-first |
+| Theme | Light/dark via CSS variables + prefers-color-scheme |
+
+**Key Components:**
+
+| Component | Responsibility |
+|-----------|----------------|
+| `Dashboard` | Main view with item list and watch toggles |
+| `ItemList` | Displays GitLab issues/MRs with filters |
+| `WatchToggle` | Optimistic toggle with error rollback |
+| `NotificationHistory` | Recent notifications from server |
+| `Settings` | ntfy setup, connection status, diagnostics |
+| `Setup` | GitLab connection wizard |
 
 ---
 
@@ -697,22 +703,22 @@ iosGitlabNotifier/
 **Deployment:**
 - Server runs on home server / Raspberry Pi (always-on, self-hosted)
 - Docker Compose includes Prometheus + Grafana for monitoring
-- Requires static IP or dynamic DNS for client connectivity
+- Server also serves PWA static files (Vite build output)
+- Requires static IP or dynamic DNS for connectivity
 
-**APNs Configuration:**
-- Token-based authentication (.p8 key from Apple Developer Portal)
-- Required environment variables:
+**ntfy Configuration:**
+- Simple HTTP POST API for sending notifications
+- No API keys needed for public ntfy.sh
+- Optional: self-hosted ntfy server for privacy
+- Environment variables:
   ```
-  APNS_KEY_PATH=/path/to/AuthKey_XXXXXX.p8
-  APNS_KEY_ID=XXXXXX
-  APNS_TEAM_ID=YYYYYY
-  APNS_BUNDLE_ID=com.yourname.iosGitlabNotifier
-  APNS_ENVIRONMENT=development|production
+  NTFY_SERVER_URL=https://ntfy.sh  # or self-hosted URL
   ```
 
 **Watch List Sync:**
 - Server-side storage (watch list in Prisma schema)
-- Clients fetch on app launch and return to foreground
+- PWA fetches on page load and uses React Query for caching
+- Optimistic updates with rollback on error
 - No real-time push for watch list changes (sufficient for single-user)
 
 ---
@@ -744,82 +750,146 @@ async function cleanupOldReceipts() {
 
 ---
 
-### Swift Package Service Details
+### PWA Service Patterns
 
-**DeviceManager:**
-```swift
-class DeviceManager {
-    func registerIfNeeded(token: Data) async throws {
-        let tokenString = token.hexString
-        let storedToken = KeychainService.getStoredDeviceToken()
+**API Client with Auth:**
+```typescript
+// packages/web/src/lib/apiClient.ts
+import { useAuthStore } from '../stores/authStore';
 
-        if tokenString != storedToken {
-            try await serverAPIClient.registerDevice(token: tokenString)
-            KeychainService.storeDeviceToken(tokenString)
-        }
+export async function apiClient<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = useAuthStore.getState().token;
+
+  const response = await fetch(`/api${endpoint}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token && { Authorization: `Bearer ${token}` }),
+      ...options.headers,
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      useAuthStore.getState().logout();
     }
+    throw new Error(await response.text());
+  }
+
+  return response.json();
 }
 ```
 
-**WatchListManager with offline queue:**
-```swift
-struct PendingWatchChange: Codable {
-    let itemId: Int
-    let itemType: String
-    let projectId: Int
-    let action: WatchAction  // .watch or .unwatch
-    let timestamp: Date
-}
+**Optimistic Watch Toggle:**
+```typescript
+// packages/web/src/api/useWatchList.ts
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
-class WatchListManager {
-    private var pendingChanges: [PendingWatchChange] = []
+export function useToggleWatch() {
+  const queryClient = useQueryClient();
 
-    func syncPendingChanges() async {
-        // Replay queue on network restore
-        // Sort by timestamp, apply in order (last-write-wins)
-    }
+  return useMutation({
+    mutationFn: async ({ itemIid, projectId, watched }: ToggleWatchParams) => {
+      if (watched) {
+        return apiClient('/watch', {
+          method: 'POST',
+          body: JSON.stringify({ itemIid, projectId }),
+        });
+      } else {
+        return apiClient(`/watch/${itemIid}`, { method: 'DELETE' });
+      }
+    },
+    onMutate: async (variables) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['items'] });
 
-    func fetchWatchList() async throws {
-        // Called on app launch and foreground
-    }
+      // Snapshot previous value
+      const previousItems = queryClient.getQueryData(['items']);
+
+      // Optimistically update
+      queryClient.setQueryData(['items'], (old: Item[]) =>
+        old.map((item) =>
+          item.itemIid === variables.itemIid
+            ? { ...item, watched: variables.watched }
+            : item
+        )
+      );
+
+      return { previousItems };
+    },
+    onError: (err, variables, context) => {
+      // Rollback on error
+      if (context?.previousItems) {
+        queryClient.setQueryData(['items'], context.previousItems);
+      }
+    },
+  });
 }
 ```
 
 ---
 
-### APNs Notification Payload
+### ntfy Notification Payload
 
 ```json
 {
-  "aps": {
-    "alert": {
-      "title": "Maria commented on MR !847",
-      "subtitle": "Auth refactor",
-      "body": "Can we use the existing token validator here instead?"
-    },
-    "sound": "default",
-    "badge": 1,
-    "mutable-content": 1,
-    "category": "GITLAB_ACTIVITY"
-  },
-  "data": {
-    "notificationId": "550e8400-e29b-41d4-a716-446655440099",
-    "source": "event",
-    "sourceId": 12345,
-    "actionType": "commented",
-    "itemType": "merge_request",
-    "itemId": 847,
-    "projectId": 42,
-    "projectPath": "team/backend",
-    "webUrl": "https://gitlab.example.com/.../merge_requests/847#note_123",
-    "actor": {
-      "name": "Maria",
-      "username": "maria",
-      "avatarUrl": "https://gitlab.example.com/uploads/.../avatar.png"
-    },
-    "isNewMention": false,
-    "batchCount": 1
+  "topic": "gitlab-notifier-550e8400",
+  "title": "Maria commented on MR !847",
+  "message": "Can we use the existing token validator here instead?",
+  "priority": 3,
+  "tags": ["gitlab", "comment"],
+  "click": "https://gitlab.example.com/team/backend/-/merge_requests/847#note_123",
+  "actions": [
+    {
+      "action": "view",
+      "label": "Open in GitLab",
+      "url": "https://gitlab.example.com/team/backend/-/merge_requests/847#note_123"
+    }
+  ]
+}
+```
+
+**ntfy Priority Mapping:**
+
+| Importance | ntfy Priority | Description |
+|------------|---------------|-------------|
+| Urgent (mention/review request) | 5 (urgent) | Makes sound even in DND |
+| High | 4 (high) | Prominent notification |
+| Normal | 3 (default) | Standard notification |
+| Low | 2 (low) | Subtle notification |
+
+**Server-side ntfy Sender:**
+```typescript
+// packages/server/src/services/ntfySender.ts
+interface NtfyPayload {
+  topic: string;
+  title: string;
+  message: string;
+  priority?: 1 | 2 | 3 | 4 | 5;
+  tags?: string[];
+  click?: string;
+  actions?: NtfyAction[];
+}
+
+export async function sendNtfyNotification(
+  serverUrl: string,
+  payload: NtfyPayload
+): Promise<{ messageId: string }> {
+  const response = await fetch(serverUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`ntfy error: ${response.status}`);
   }
+
+  const messageId = response.headers.get('X-Message-ID') || '';
+  return { messageId };
 }
 ```
 
@@ -851,12 +921,8 @@ class WatchListManager {
 | _(unknown)_ | _(fallback)_ | "{actor} updated {itemType} {itemRef}" |
 
 **Special notification types:**
-- `type: "auth_expired"` - GitLab token invalid, prompt re-auth
+- `type: "auth_expired"` - GitLab token invalid, prompt re-auth in PWA
 - `batchCount > 1` - Batched notification ("3 new comments on MR !847")
-
-**Notification categories (for action buttons):**
-- `GITLAB_ACTIVITY` - Default, just "Open" action
-- `GITLAB_NEW_MENTION` - Shows "Watch" and "Dismiss" buttons
 
 ---
 
@@ -869,8 +935,8 @@ class WatchListManager {
 | GitLab /events 5xx/timeout (fallback) | HTTP error | Log, skip events this cycle | `gitlab_events_failures_total++` |
 | GitLab /todos 401 | HTTP 401 | Stop polling user. Send `auth_expired` push. | `gitlab_auth_failures_total++` |
 | GitLab notes/events 401 | HTTP 401 | Stop polling user. Send `auth_expired` push. | `gitlab_auth_failures_total++` |
-| APNs transient error | APNs response | Retry with exponential backoff (max 3 attempts) | `apns_retries_total++` |
-| APNs BadDeviceToken | APNs response | Mark DeviceToken as `active = false` | `apns_invalid_tokens_total++` |
+| ntfy transient error | HTTP 5xx / timeout | Retry with exponential backoff (max 3 attempts) | `ntfy_retries_total++` |
+| ntfy permanent error | HTTP 4xx | Log error, mark notification as dead | `ntfy_errors_total++` |
 | 3+ consecutive failures (any endpoint) | Counter | Send alert push: "Notification service experiencing issues" | `poll_consecutive_failures` |
 | Server restart | Process start | Resume from PollState/WatchedItemCursor timestamps. No duplicates due to NotifiedItem. | — |
 
@@ -892,18 +958,6 @@ class WatchListManager {
 | Server 401 (JWT expired) | "Session expired. Please sign in again." |
 | Server 5xx | "Something went wrong on our end. Try again in a moment." |
 | Network unreachable | "No internet connection. Changes will sync when you're back online." |
-
----
-
-### macOS MenuBarExtra States
-
-| State | Icon | Dropdown Content |
-|-------|------|------------------|
-| Connected, no notifications | Default icon | "No recent activity" empty state |
-| Connected, has notifications | Icon + badge count | Notification list (most recent 20) |
-| Offline | Dimmed icon | "Offline - showing cached data" banner + cached list |
-| Auth expired | Warning icon | "GitLab connection expired" banner + "Reconnect" button |
-| Server unreachable | Error icon | "Cannot reach notification server" + retry option |
 
 ---
 
@@ -1033,12 +1087,12 @@ POLL CYCLE (adaptive per user, with jitter):
      WHERE status="queued" AND nextAttemptAt <= now()
      SET status="sending" (prevents concurrent delivery)
    - For each leased outbox entry:
-     - Send to APNs for each active DeviceToken
-     - Record NotificationAttempt per device (success/retryable_error/permanent_error)
-     - If ALL devices succeeded → status="sent"
-     - If retryable errors remain → status="queued", nextAttemptAt = exponential backoff
+     - Send to ntfy via HTTP POST to user's topic
+     - Record NotificationAttempt (success/retryable_error/permanent_error)
+     - If succeeded → status="sent"
+     - If retryable errors (5xx/timeout) → status="queued", nextAttemptAt = exponential backoff
      - If retry budget exhausted (e.g., 5 attempts) → status="dead"
-   - Update NotificationReceipt.sentAt when APNs accepts (delivery evidence)
+   - Update NotificationReceipt.sentAt when ntfy accepts (delivery evidence)
 
    Emit delivery-phase metrics:
    - notifications_sent_total{user_id, source_type}
@@ -1048,7 +1102,7 @@ POLL CYCLE (adaptive per user, with jitter):
 8. METRICS & HEALTH
    ─────────────────────────────────────────────
    - Poll loop metrics reflect enqueue success (step 6)
-   - Delivery metrics reflect APNs acceptance + receipt acknowledgements (step 7)
+   - Delivery metrics reflect ntfy HTTP success responses (step 7)
    - Outbox depth gauge for monitoring queue health
 ```
 
@@ -1083,13 +1137,12 @@ notifications_dead_total{user_id}             # Exhausted retry budget
 outbox_depth_gauge{user_id, status}           # Current outbox size by status (queued/sending/dead)
 outbox_oldest_age_seconds{user_id}            # Age of oldest queued notification
 
-# APNs metrics (delivery worker)
-apns_sent_total{user_id}
-apns_received_total{user_id}                  # From receipt pings
-apns_delivery_rate{user_id}                   # Gauge: received/sent
-apns_retries_total{user_id}
-apns_invalid_tokens_total{user_id}
-delivery_attempt_duration_seconds{user_id}    # Time to complete APNs send
+# ntfy metrics (delivery worker)
+ntfy_sent_total{user_id}
+ntfy_delivery_rate{user_id}                   # Gauge: sent/queued
+ntfy_retries_total{user_id}
+ntfy_errors_total{user_id, error_type}        # HTTP errors by type
+delivery_attempt_duration_seconds{user_id}    # Time to complete ntfy send
 
 # System health
 poll_cycle_duration_seconds{user_id}          # Full poll cycle time
@@ -1103,13 +1156,13 @@ watched_items_gauge{user_id}                  # Items per user
 
 ```yaml
 # Alert if delivery rate drops
-- alert: APNsDeliveryDegraded
-  expr: apns_delivery_rate < 0.95
+- alert: NtfyDeliveryDegraded
+  expr: ntfy_delivery_rate < 0.95
   for: 1h
   labels:
     severity: warning
   annotations:
-    summary: "APNs delivery rate below 95%"
+    summary: "ntfy delivery rate below 95%"
 
 # Alert if either endpoint consistently failing
 - alert: GitLabPollingFailing
@@ -1175,23 +1228,27 @@ watched_items_gauge{user_id}                  # Items per user
 
 ---
 
-### Mock APNs Endpoint (Testing)
+### Mock ntfy Endpoint (Testing)
 
 ```typescript
-// routes/mock-apns.ts (test environment only)
-fastify.post('/mock-apns', async (request, reply) => {
+// routes/mock-ntfy.ts (test environment only)
+fastify.post('/mock-ntfy/:topic', async (request, reply) => {
+  const { topic } = request.params;
   const payload = request.body;
 
   // Log for test verification
-  fastify.log.info({ apnsPayload: payload }, 'Mock APNs received');
+  fastify.log.info({ ntfyPayload: payload, topic }, 'Mock ntfy received');
 
   // Store for assertion
-  mockApnsStore.push({
+  mockNtfyStore.push({
+    topic,
     payload,
     receivedAt: new Date().toISOString()
   });
 
-  return { success: true };
+  // Return mock message ID like real ntfy
+  reply.header('X-Message-ID', `mock-${Date.now()}`);
+  return { id: `mock-${Date.now()}` };
 });
 ```
 
@@ -1214,12 +1271,11 @@ fastify.post('/mock-apns', async (request, reply) => {
 
 ### Implementation Sequence
 
-1. **Server initialization** - Clone DriftOS starter, apply SQLite modifications, add mock APNs route
-2. **Swift Package setup** - Create GitLabNotifierKit with purpose-built models and API clients
-3. **iOS app** - Create with SwiftData, @Observable, NavigationStack, and optimistic updates
-4. **macOS menu bar app** - MenuBarExtra with shared views
-5. **APNs integration** - With notification receipt flow for delivery verification
-6. **Prometheus metrics** - Full observability with alerting rules
+1. **Server initialization** - Clone DriftOS starter, apply SQLite modifications, add mock ntfy route
+2. **Shared package setup** - Create @iosGitlabNotifier/shared with TypeScript types and utilities
+3. **PWA app** - Create with React, Zustand, React Query, and optimistic updates
+4. **ntfy integration** - HTTP POST to ntfy.sh topics for push delivery
+5. **Prometheus metrics** - Full observability with alerting rules
 
 ---
 
@@ -1228,24 +1284,23 @@ fastify.post('/mock-apns', async (request, reply) => {
 ### Decision Priority Analysis
 
 **Critical Decisions (Block Implementation):**
-- Platform versions: iOS 17+ / macOS 14+ minimum (enables @Observable)
-- State management: @Observable + Environment pattern
-- Local persistence: SwiftData
+- Client framework: React 18+ with TypeScript
+- State management: Zustand + React Query
 - Server validation: Zod schemas in Fastify
 - Polling strategy: Dual `/todos` + `/events` for complete activity coverage
+- Push notifications: ntfy.sh (no Apple Developer account required)
 
 **Important Decisions (Shape Architecture):**
-- Navigation: NavigationStack (iOS)
+- Navigation: React Router
 - Database migrations: Prisma Migrate
 - Rate limiting: Per-IP basic limiting
 - Error UX: Inline + Toast hybrid with user-friendly messages
-- Loading UX: Optimistic updates with documented revert pattern
-- Observability: Notification receipt flow for delivery verification
+- Loading UX: Optimistic updates with React Query rollback
+- Observability: Prometheus metrics for delivery verification
 
 **Deferred Decisions (Post-MVP):**
 - CI/CD automation (manual builds initially)
-- Fastlane match for code signing
-- CloudKit sync for SwiftData
+- Self-hosted ntfy server for privacy
 
 ### Data Architecture
 
@@ -1254,21 +1309,19 @@ fastify.post('/mock-apns', async (request, reply) => {
 | Server Database | SQLite via Prisma | Simple, file-based, sufficient for single-user |
 | Migrations | Prisma Migrate | Auto-generated from schema, version controlled |
 | Validation | Server-side only (Zod) | Single source of truth, simpler client code |
-| Client Persistence | SwiftData | Modern, works with @Observable, future CloudKit option |
-| Client Models | Purpose-built | Only include what UI needs, decoupled from server internals |
-| Caching | SwiftData local cache | GitLab items cached locally, refreshed on foreground |
+| Client Caching | React Query cache | Automatic caching, stale-while-revalidate, persisted to localStorage |
+| Client Models | Purpose-built TypeScript types | Only include what UI needs, decoupled from server internals |
 
 #### Server-to-Client Model Mapping
 
-| Server Entity (Prisma) | Client Model (SwiftData) | Notes |
+| Server Entity (Prisma) | Client Type (TypeScript) | Notes |
 |------------------------|--------------------------|-------|
-| User | — | Not stored on client; auth token in Keychain |
-| DeviceToken | — | Managed by DeviceManager, not persisted locally |
+| User | — | Not stored on client; JWT in localStorage |
+| NtfyConfig | `NtfyConfig` | Topic, serverUrl for settings display |
 | WatchedItem | `WatchedItem` | itemIid, itemType, projectId, title, projectPath |
 | NotifiedItem | — | Server-only deduplication |
 | PollState | — | Server-only |
-| — | `CachedGitLabItem` | Client-only cache of items from /items endpoint |
-| — | `PendingWatchChange` | Client-only offline queue |
+| — | `GitLabItem` | Client-side items from /items endpoint (React Query cache) |
 
 ### Authentication & Security
 
@@ -1276,7 +1329,7 @@ fastify.post('/mock-apns', async (request, reply) => {
 |----------|--------|-----------|
 | Server Auth | JWT tokens (7-day expiry) | Standard, stateless, refresh flow built in |
 | GitLab PAT Storage | AES-256-GCM encryption | Application-layer encryption before DB storage |
-| Client Credentials | Keychain Services | Platform secure storage via KeychainService |
+| Client Token Storage | localStorage | JWT token only; sensitive credentials stay on server |
 | API Security | TLS required + per-IP rate limiting | Defense in depth for self-hosted server |
 | Rate Limiting | 100 req/min per IP | Prevents accidental floods, uses Fastify rate-limit plugin |
 
@@ -1290,47 +1343,52 @@ fastify.post('/mock-apns', async (request, reply) => {
 | Error Copy | User-friendly with hints | See Error Message Catalogue above |
 | Polling Strategy | Dual: `/todos` + `/events` | Complete activity coverage for watched items |
 
-### Client Architecture (iOS/macOS)
+### Client Architecture (PWA)
 
 | Decision | Choice | Version/Notes |
 |----------|--------|---------------|
-| Minimum iOS | iOS 17+ | Required for @Observable |
-| Minimum macOS | macOS 14+ | Required for @Observable |
-| Deployment Target | Latest stable at implementation | Keep aligned with current Xcode |
-| State Management | @Observable + Environment | Clean, minimal boilerplate |
-| Navigation (iOS) | NavigationStack | Type-safe, simple app structure |
-| Navigation (macOS) | MenuBarExtra | Native menu bar pattern |
-| Local Persistence | SwiftData | Modern, integrates with @Observable |
-| Networking | URLSession | Native, no dependencies |
+| Framework | React 18+ | Hooks, concurrent features |
+| Language | TypeScript 5.x | Type safety, better DX |
+| Bundler | Vite | Fast HMR, native ESM |
+| Styling | Tailwind CSS | Utility-first, mobile-first |
+| State Management | Zustand + React Query | Global state + server cache |
+| Routing | React Router | Declarative, nested routes |
+| HTTP | fetch via React Query | Automatic caching and retries |
 | Error Presentation | Inline + Toast hybrid | Validation inline, network errors as toasts |
-| Loading UX | Optimistic updates | See pattern below |
-| Code Signing | Xcode automatic (MVP) | Revisit fastlane match if painful |
+| Loading UX | Optimistic updates | React Query mutations with rollback |
+| PWA | Vite PWA plugin | Service worker, manifest |
 
 #### Optimistic Update Pattern
 
-```swift
-/// Standard pattern for optimistic UI updates with revert on failure
-func toggleWatch(item: CachedGitLabItem) async {
-    // 1. Optimistic update
-    let previousState = item.isWatched
-    item.isWatched.toggle()
-
-    // 2. Attempt server sync with timeout
-    do {
-        try await withTimeout(seconds: 5) {
-            try await api.setWatch(item.itemIid, item.projectId, item.isWatched)
-        }
-    } catch {
-        // 3. Revert on failure
-        item.isWatched = previousState
-
-        // 4. Show user-friendly error
-        ToastManager.shared.show(
-            message: "Couldn't update watch status. Try again.",
-            style: .error
-        )
+```typescript
+// React Query optimistic update with rollback
+const toggleWatch = useMutation({
+  mutationFn: async ({ itemIid, projectId, watched }) => {
+    if (watched) {
+      return apiClient('/watch', { method: 'POST', body: JSON.stringify({ itemIid, projectId }) });
     }
-}
+    return apiClient(`/watch/${itemIid}`, { method: 'DELETE' });
+  },
+  onMutate: async (variables) => {
+    // Cancel refetches
+    await queryClient.cancelQueries({ queryKey: ['items'] });
+
+    // Snapshot and optimistically update
+    const previous = queryClient.getQueryData(['items']);
+    queryClient.setQueryData(['items'], (old) =>
+      old.map((item) => item.itemIid === variables.itemIid
+        ? { ...item, watched: variables.watched }
+        : item
+      )
+    );
+    return { previous };
+  },
+  onError: (err, vars, context) => {
+    // Rollback on error
+    queryClient.setQueryData(['items'], context.previous);
+    toast.error("Couldn't update watch status. Try again.");
+  },
+});
 ```
 
 **Apply this pattern to:**
@@ -1344,9 +1402,9 @@ func toggleWatch(item: CachedGitLabItem) async {
 |----------|--------|-----------|
 | Server Test Runner | Vitest | Included in DriftOS starter |
 | GitLab API Mocking | HTTP-level (nock/msw) | Intercept real requests, test actual flow |
-| APNs Testing | Simple Fastify mock route | `/mock-apns` endpoint logs payloads |
-| SwiftData Testing | inMemoryOnly stores | Fast, isolated, no disk cleanup |
-| Test Commands | `npm test` (server), `xcodebuild test` (clients) | Documented for manual runs |
+| ntfy Testing | Simple Fastify mock route | `/mock-ntfy/:topic` endpoint logs payloads |
+| PWA Testing | Vitest + Playwright | Unit tests + E2E browser tests |
+| Test Commands | `pnpm test` (all packages) | Turborepo runs tests in parallel |
 
 ### Observability & Monitoring
 
@@ -1355,27 +1413,24 @@ func toggleWatch(item: CachedGitLabItem) async {
 | Metrics | Prometheus | Verify reliability NFR (> 99% delivery) |
 | Dashboards | Grafana | Visualize polling success, delivery rates |
 | Logging | Pino (structured JSON) | Built into DriftOS starter |
-| Delivery Verification | Notification Service Extension + open-acks | Track best-effort device receipt + user opens |
+| Delivery Verification | ntfy HTTP response codes | Track delivery success via HTTP status |
 
-#### Notification Receipt Flow
+#### Notification Delivery Flow
 
 ```
-1. Server sends push with unique notification_id in payload:
-   { "data": { "notificationId": "uuid-here", ... } }
+1. Server sends notification via ntfy HTTP POST:
+   POST https://ntfy.sh/{topic} { "title": "...", "message": "...", "click": "..." }
 
-2. When notification is received, Notification Service Extension pings server (best-effort):
-   POST /notifications/:id/received { "type": "delivered" }
+2. ntfy returns success (HTTP 200) with X-Message-ID header
 
-3. When user opens notification, app also pings server (optional, separate metric):
-   POST /notifications/:id/received { "type": "opened" }
+3. Server records NotificationReceipt with sentAt timestamp
 
 4. Server tracks in Prometheus:
-   - apns_sent_total (counter)
-   - apns_delivered_total (counter, NSE-based)
-   - apns_opened_total (counter)
-   - apns_delivery_rate (gauge: delivered/sent)
+   - ntfy_sent_total (counter)
+   - ntfy_errors_total (counter, by error type)
+   - ntfy_delivery_rate (gauge: sent/queued)
 
-5. Alert if delivery_rate < 95% over 1 hour (only if NSE-delivered coverage is stable)
+5. Alert if ntfy error rate > 5% over 15 minutes
 ```
 
 ### Infrastructure & Deployment
@@ -1387,7 +1442,7 @@ func toggleWatch(item: CachedGitLabItem) async {
 | Monitoring | Prometheus + Grafana | Verify reliability NFR |
 | Logging | Pino (structured JSON) | Built into DriftOS starter |
 | CI/CD | Manual builds initially | Add automation later if needed |
-| APNs Auth | Token-based (.p8 key) | Modern, recommended by Apple |
+| ntfy Integration | ntfy.sh (default) or self-hosted | Free, no Apple Developer account required |
 
 **Deployment Options:**
 1. **Self-hosted (Home Server/RPi):** Docker Compose with SQLite volume mount
@@ -1415,15 +1470,15 @@ func toggleWatch(item: CachedGitLabItem) async {
 **Health & Readiness Endpoints:**
 ```
 GET /health         → { "status": "ok", "version": "1.0.0", "uptime": 12345 }
-GET /health/ready   → { "ready": true, "db": "ok", "apns": "ok" }  # Checks DB connectivity + APNs provider init
+GET /health/ready   → { "ready": true, "db": "ok", "ntfy": "ok" }  # Checks DB connectivity + ntfy reachability
 ```
 
 **Smoke Test Endpoint (dev/staging only):**
 ```
 POST /debug/test-notification
-// Sends a test push to verify APNs pipeline end-to-end
-// Request: { "deviceId": "..." }
-// Response: { "sent": true, "apnsId": "..." }
+// Sends a test push to verify ntfy pipeline end-to-end
+// Request: { "topic": "..." }
+// Response: { "sent": true, "messageId": "..." }
 ```
 
 **Alerting Rules (Prometheus):**
@@ -1440,9 +1495,9 @@ POST /debug/test-notification
   for: 10m
   labels: { severity: warning }
 
-# Warning: APNs delivery failures
-- alert: ApnsDeliveryFailures
-  expr: rate(apns_delivery_failures_total[5m]) / rate(apns_delivery_total[5m]) > 0.05
+# Warning: ntfy delivery failures
+- alert: NtfyDeliveryFailures
+  expr: rate(ntfy_errors_total[5m]) / rate(ntfy_sent_total[5m]) > 0.05
   for: 15m
   labels: { severity: warning }
 ```
@@ -1453,15 +1508,15 @@ When implementing any architectural component, verify:
 
 - [ ] Server endpoint exists with Zod validation schema
 - [ ] HTTP-level tests (nock/msw) cover happy path + error cases
-- [ ] Client integration added to GitLabNotifierKit
-- [ ] SwiftData model created (if persistence needed)
-- [ ] Purpose-built model mapping documented
+- [ ] PWA component/hook created with React Query integration
+- [ ] Zustand store updated (if client-side state needed)
+- [ ] TypeScript types defined in shared package
 - [ ] Error handling returns user-friendly messages from catalogue
 - [ ] Optimistic update pattern applied (if applicable)
 - [ ] Loading/error states render correctly (inline or toast)
 - [ ] Prometheus metrics emitted for observability
 - [ ] Self-review against Component Completion Checklist
-- [ ] Code builds successfully on all target platforms
+- [ ] Code builds successfully (`pnpm build` passes)
 
 ### Architecture Coherence Assessment
 
@@ -1471,15 +1526,16 @@ When implementing any architectural component, verify:
 
 **Key Strengths:**
 - Per-resource polling (primary) + /todos + /events (fallback) ensures notification reliability
-- Clean separation via GitLabNotifierKit enables code reuse
+- Clean separation via shared TypeScript package enables code reuse
 - 30 standardized patterns prevent AI agent conflicts
 - Observability built-in from day one
 - Clear Definition of Done for consistent quality
+- No Apple Developer account required (ntfy.sh for push)
 
 **Areas for Future Enhancement:**
 - Advanced notification threading
-- Automated full-flow testing (GitLab → device)
-- CloudKit sync for SwiftData
+- Automated full-flow testing (GitLab → ntfy → device)
+- Offline PWA support with service worker caching
 
 ### Architecture Completeness Checklist
 
@@ -1509,7 +1565,7 @@ When implementing any architectural component, verify:
 
 **✅ Test Architecture**
 - [x] E2E notification flow integration test defined
-- [x] Swift test factory pattern documented
+- [x] TypeScript test factory pattern documented
 - [x] Definition of Done established
 
 ### Architecture Readiness Assessment

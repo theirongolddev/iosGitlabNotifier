@@ -21,7 +21,7 @@ completedAt: '2026-01-07'
 
 ## Executive Summary
 
-iosGitlabNotifier is a minimal iOS app (with macOS menu bar companion) that delivers push notifications for GitLab activity from self-hosted instances within 1-2 minutes of events.
+iosGitlabNotifier is a lightweight Progressive Web App (PWA) paired with ntfy push notifications that delivers alerts for GitLab activity from self-hosted instances within 1-2 minutes of events.
 
 ### The Problem
 
@@ -36,16 +36,18 @@ A developer working on a team using self-hosted GitLab as the central hub - some
 - **Focused simplicity:** Does one thing well - no bloat, no in-app workflows
 - **Self-hosted support:** Works with private GitLab instances, not just gitlab.com
 - **Fast polling:** 1-2 minute notification latency vs. hours with email
+- **No Apple Developer account required:** Uses ntfy.sh for push notifications, avoiding $99/year cost
+- **Cross-platform by design:** PWA works on any device with a browser; ntfy app handles push on iOS
 - **Personal utility:** Built to solve a real workflow problem, not to be a product
 
 ## Project Classification
 
-**Technical Type:** mobile_app
+**Technical Type:** web_app (PWA)
 **Domain:** general (developer productivity)
 **Complexity:** low
 **Project Context:** Greenfield - new project
 
-This is a straightforward mobile notification app focused on reliability and speed. No high-complexity domain concerns like regulatory compliance or safety-critical systems apply.
+This is a straightforward notification system focused on reliability and speed. A PWA provides watch list management while ntfy.sh handles push delivery. No high-complexity domain concerns like regulatory compliance or safety-critical systems apply.
 
 ## Success Criteria
 
@@ -87,10 +89,9 @@ N/A - This is a personal utility, not a commercial product. Success is measured 
 2. **Item List View** - Display issues and MRs the user is involved in (assigned, authored, tagged)
 3. **Watch/Favorite Toggle** - Mark specific items to receive notifications for (optionally mirrored to GitLab subscription state)
 4. **Mute/Snooze** - Temporarily suppress notifications for a tracked item without untracking it
-5. **Rich Push Notifications** - Full context (who, what, which item) delivered within 1-2 minutes
-6. **New Tag Quick Action** - When tagged in a new issue/MR, notification includes quick action to Watch or Dismiss
-7. **Deep Linking** - Tapping a notification opens the item directly in GitLab (browser)
-8. **Dual Platform Support** - iOS app + macOS menu bar app with equivalent functionality
+5. **Push Notifications via ntfy** - Full context (who, what, which item) delivered within 1-2 minutes via ntfy.sh
+6. **Deep Linking** - Tapping a notification opens the item directly in GitLab (browser)
+7. **PWA Experience** - Installable web app with home screen icon, offline indicator, and mobile-optimized UI
 
 ### Growth Features (Post-MVP)
 
@@ -143,170 +144,152 @@ This reveals a gap: Alex needs to be more intentional about the Watch/Dismiss de
 
 Alex also checks the item list, filters to "MRs where I'm reviewer," and watches two other pending reviews that slipped through. Lesson learned, gap closed.
 
-### Journey 5: macOS Menu Bar - "Desktop Flow, Same Trust"
-
-Monday morning, Alex is at the desk with the MacBook - phone is charging across the room. The menu bar shows the iosGitlabNotifier icon, a small GitLab logo that stays unobtrusive until needed.
-
-A macOS notification slides in from the top right: "**@chen** commented on **Issue #445 - API rate limiting**: 'Ready for your review when you have a moment.'" Alex sees it in peripheral vision, notes it's not urgent, and keeps typing. The notification disappears after a few seconds but the menu bar icon shows a subtle badge: 1 unread.
-
-Later, during a compile wait, Alex clicks the menu bar icon. A compact dropdown shows recent notifications with the same info density as iOS: who, what, which item. Alex clicks the Issue #445 entry, browser opens to the exact issue, review happens.
-
-The experience is identical to mobile - same watch list (synced), same notification content, same deep links. Just adapted to the desktop context where Alex might be actively coding rather than glancing at a phone.
-
-### Journey 6: macOS Menu Bar - "Heads-Down Coding Session"
-
-Wednesday afternoon. Alex has blocked 3 hours for deep work on a complex feature. macOS Focus mode is on, but iosGitlabNotifier is in the allowed apps list - it's the one interruption source Alex trusts.
-
-During the session, three notifications arrive. The menu bar icon badge increments: 1... 2... 3. Alex doesn't look - the lack of sound/vibration (configured for this Focus mode) means it's not urgent. The badge is just ambient awareness.
-
-At the 2-hour mark, Alex takes a stretch break and clicks the menu bar icon. Quick scan: two comments on a watched MR (approval + minor suggestion), one new mention on an issue. Alex processes all three in 4 minutes: acknowledges the approval, notes the suggestion for later, watches the new issue.
-
-Back to coding. No anxiety about what accumulated. No email inbox to wade through. Just a clean queue that was handled in one batch.
-
 ### Journey Requirements Summary
 
 These journeys reveal the following capability requirements:
 
-**iOS App:**
+**PWA (Web App):**
 - GitLab authentication (PAT or OAuth)
 - Item list with filtering (by repo, by involvement type)
 - Watch/unwatch toggle per item
-- Rich push notifications (who, what, which item)
-- New-tag quick action (Watch or Dismiss)
+- Notification history view
 - Deep linking to GitLab in browser
+- Mobile-optimized responsive UI
+- Installable as home screen app
 
-**macOS Menu Bar App:**
-- Same authentication and watch list (synced with iOS)
-- Menu bar icon with unread badge
-- Compact dropdown showing recent notifications
-- macOS native notifications
-- Deep linking to GitLab in browser
-- Focus mode compatibility
+**ntfy Push Notifications:**
+- Rich notification content (who, what, which item)
+- Deep links to GitLab when tapped
+- Works on iOS via ntfy app from App Store
 
-**Cross-Platform:**
-- Shared watch list state between iOS and macOS
-- Consistent notification content format
-- Unified item list and filtering
+**Server:**
+- GitLab polling and activity detection
+- Watch list storage and management
+- ntfy notification delivery
 
-## Mobile App Specific Requirements
+## PWA and Notification Requirements
 
 ### Project-Type Overview
 
-iosGitlabNotifier is a native Swift/SwiftUI application targeting iOS and macOS platforms. The architecture includes a lightweight server component for reliable push notification delivery, with client apps focused on watch list management and notification display.
+iosGitlabNotifier is a Progressive Web App (PWA) paired with ntfy.sh for push notifications. The architecture includes a server component for GitLab polling and notification delivery, with the PWA providing watch list management and notification history.
 
 ### Platform Requirements
 
-**iOS App:**
-- SwiftUI-based interface
-- Minimum iOS version: iOS 17+ (aligns with @Observable-based architecture)
-- iPhone and iPad support (universal app)
+**PWA (Progressive Web App):**
+- React + TypeScript + Vite
+- Mobile-first responsive design with Tailwind CSS
+- Installable via "Add to Home Screen" on iOS Safari
+- Works on any modern browser (iOS Safari, Chrome, Firefox, etc.)
 
-**macOS Menu Bar App:**
-- SwiftUI with MenuBarExtra
-- Minimum macOS version: macOS 14+ (aligns with @Observable-based architecture)
-- Menu bar utility with dropdown interface
-- Native macOS notifications
+**ntfy App (for push notifications):**
+- Free iOS app from App Store
+- User subscribes to their unique notification topic
+- Handles push notification display and deep linking
 
-**Code Sharing:**
-- Shared Swift package for core logic (GitLab API client, data models, watch list management)
-- Platform-specific UI layers
-- Single Xcode workspace with iOS and macOS targets
+**Server:**
+- Fastify + TypeScript + Prisma + SQLite
+- Hosts PWA static files
+- REST API for watch list management
+- GitLab polling and ntfy notification delivery
 
 ### Push Notification Strategy
 
-**Architecture:** Server-side polling with APNs delivery
+**Architecture:** Server-side polling with ntfy.sh delivery
 
 **Server Component (Node.js/TypeScript):**
 - Polls GitLab API every 1-2 minutes for watched items
 - Detects new activity (comments, mentions, status changes)
-- Sends push notifications via Apple Push Notification service (APNs)
-- Stores device tokens and watch list configuration
+- Sends push notifications via ntfy.sh HTTP API
+- Stores watch list configuration
 
-**Why server-side:**
-- iOS Background App Refresh is throttled and unreliable (15+ min delays)
-- Server polling guarantees consistent 1-2 minute latency
-- Single polling source reduces GitLab API load vs. multiple clients
+**Why ntfy.sh:**
+- No Apple Developer account required ($0/year vs $99/year)
+- Simple HTTP API for sending notifications
+- Free tier sufficient for personal use
+- iOS app available in App Store (they handle APNs)
+- Can self-host ntfy server if desired
 
-**APNs Configuration:**
-- Rich notifications with full context (who, what, which item)
-- Notification actions for Watch/Dismiss on new tags
-- Silent pushes for watch list sync (optional)
+**ntfy Configuration:**
+- Each user gets unique topic (e.g., `gitlab-notifier-{uuid}`)
+- Notifications include title, message, priority, and click URL
+- Tapping notification opens GitLab item in browser
 
 ### Offline Mode
 
 **Behavior when offline:**
 - Display cached watch list and last-known item states
-- Show clear "offline" indicator
+- Show clear "offline" indicator banner
 - Queue watch/unwatch actions for sync when connection returns
-- No background polling attempts while offline
 
 **Data caching:**
-- Local persistence of watch list (Core Data or SwiftData)
+- React Query cache for API data (persisted to localStorage)
 - Last-fetched item metadata (title, status, last activity)
-- Notification history for recent items
+- Notification history fetched from server
 
-### Device Permissions
+### Data Storage
 
-**Required:**
-- Push notifications (critical for core functionality)
-- Network access (GitLab API communication)
+**Server-side (canonical):**
+- Watch list stored on notification server (single source of truth)
+- All GitLab credentials stored server-side (encrypted)
+- PWA only stores JWT token for API authentication
 
-**Not required for MVP:**
-- Background App Refresh (server handles polling)
-- Location, camera, microphone, etc.
+**Client-side (PWA):**
+- JWT token in localStorage
+- React Query cache for offline viewing
+- No sensitive credentials stored in browser
 
-### Cross-Platform Sync
+### Distribution
 
-**Watch list synchronization between iOS and macOS:**
+**PWA Distribution:**
+- No app store required
+- Users access via URL and "Add to Home Screen"
+- Updates deployed instantly (no review process)
+- Works on any device with a modern browser
 
-**Canonical approach (required):** Server-side storage
-- Watch list stored on notification server (single source of truth for polling + notifications)
-- Clients sync on app launch, foreground, and after local mutations
-- More control, works without iCloud
-
-**Optional optimization (non-authoritative):** iCloud Key-Value Store
-- May cache "last UI state" for faster perceived sync between Apple devices
-- Must never override server truth without reconciliation
-
-### Store Compliance
-
-**Initial approach:** Ad-hoc distribution (personal devices only)
-- Free Apple ID sufficient for development
-- Limited to registered device UDIDs
-- No App Store review process
-
-**Future path:** TestFlight → App Store (if desired)
-- Requires Apple Developer Program ($99/year)
-- TestFlight allows up to 10,000 testers
-- App Store enables wider distribution
+**ntfy App:**
+- User installs from iOS App Store (free)
+- No developer account needed (ntfy handles distribution)
 
 ### Implementation Considerations
 
-**Xcode Project Structure:**
+**Monorepo Project Structure:**
 ```
 iosGitlabNotifier/
-├── Shared/                           # Swift package
-│   ├── Models/                      # Data models
-│   ├── GitLabAPI/                   # API client
-│   └── WatchListManager/            # Core logic
-├── iOS/                              # iOS app target
-│   └── Views/                       # SwiftUI views
-├── iOS-NotificationExtension/        # Notification Service Extension
-│   └── NotificationService.swift    # Rich notification processing
-├── macOS/                            # macOS app target
-│   └── MenuBar/                     # Menu bar UI
-└── Server/                           # Node.js server
-    ├── src/
-    │   ├── gitlab-poller.ts
-    │   └── apns-sender.ts
-    └── package.json
+├── packages/
+│   ├── server/                  # Fastify notification server
+│   │   ├── src/
+│   │   │   ├── routes/          # API endpoints
+│   │   │   ├── services/        # GitLab poller, ntfy sender
+│   │   │   └── jobs/            # Background polling
+│   │   ├── prisma/
+│   │   └── package.json
+│   │
+│   ├── web/                     # React PWA
+│   │   ├── src/
+│   │   │   ├── components/      # React components
+│   │   │   ├── pages/           # Route pages
+│   │   │   ├── stores/          # Zustand stores
+│   │   │   └── api/             # React Query hooks
+│   │   ├── public/
+│   │   │   └── manifest.json    # PWA manifest
+│   │   └── package.json
+│   │
+│   └── shared/                  # Shared TypeScript
+│       ├── src/
+│       │   ├── types/           # API types
+│       │   └── validation/      # Zod schemas
+│       └── package.json
+│
+├── package.json                 # Workspace root
+└── pnpm-workspace.yaml
 ```
 
 **Development workflow:**
-- Swift code editable in any editor (VS Code with Swift extension)
-- Build and test via `xcodebuild` CLI when possible
-- Xcode required for: signing, device deployment, debugging
-- Server component fully CLI-based (no Xcode dependency)
+- All development on Linux (no Mac required)
+- Run Vite dev server for hot reloading
+- Run Vitest for unit tests
+- Run Playwright for E2E tests
+- Deploy to any server that can run Node.js
 
 ## Scoping Validation
 
@@ -317,21 +300,20 @@ This project takes the leanest viable approach: solve the core notification reli
 
 ### Scope Boundaries
 
-The MVP scope (7 features) directly maps to the 6 user journeys with no unnecessary additions. Each feature exists because a journey requires it:
+The MVP scope (7 features) directly maps to the 4 user journeys with no unnecessary additions. Each feature exists because a journey requires it:
 
 | MVP Feature | Enables Journey |
 |-------------|-----------------|
 | GitLab Authentication | All journeys (prerequisite) |
 | Item List View | Journeys 1, 3, 4 |
 | Watch/Favorite Toggle | Journeys 1, 3 |
-| Rich Push Notifications | Journeys 2, 5, 6 |
-| New Tag Quick Action | Journey 4 |
-| Deep Linking | Journeys 2, 5 |
-| Dual Platform | Journeys 5, 6 |
+| ntfy Push Notifications | Journey 2 |
+| Deep Linking | Journey 2 |
+| PWA Experience | All journeys |
 
 ### Risk Mitigation
 
-**Technical:** Server-side polling with APNs is proven. Ad-hoc distribution eliminates App Store review complexity initially.
+**Technical:** Server-side polling is proven. ntfy.sh is a mature, open-source notification service. PWA distribution eliminates all app store complexity.
 
 **Scope Creep:** Post-MVP features (smart focus, noise filtering) are explicitly deferred. Working hours and quick replies are vision-only.
 
@@ -361,7 +343,7 @@ The MVP scope (7 features) directly maps to the 6 user journeys with no unnecess
 - FR14: User can add an item to their watch list (toggle to "watched")
 - FR15: User can remove an item from their watch list (toggle to "unwatched")
 - FR16: User can view their current watch list
-- FR17: Watch list synchronizes across user's iOS and macOS devices
+- FR17: Watch list stored on server and accessible from any device via PWA
 - FR44: User can mute a tracked item until a chosen time (e.g., 30m, 2h, end of day)
 
 ### Auto-Watch Behavior
@@ -420,14 +402,6 @@ The MVP scope (7 features) directly maps to the 6 user journeys with no unnecess
 - FR35: System displays clear offline indicator when not connected
 - FR36: System queues watch/unwatch changes made offline for sync when connection returns
 
-### macOS Menu Bar (Platform-Specific)
-
-- FR37: Menu bar displays app icon that remains unobtrusive when no notifications
-- FR38: Menu bar icon displays unread notification badge count
-- FR39: User can click menu bar icon to view compact dropdown of recent notifications and history
-- FR40: User can click a notification entry in dropdown to open item in browser
-- FR41: App integrates with macOS Focus mode (respects notification settings)
-
 ### Diagnostics & Trust
 
 - FR45: User can view polling/sync status details in app (last poll times, delivery stats) to verify the system is working
@@ -462,7 +436,7 @@ The MVP scope (7 features) directly maps to the 6 user journeys with no unnecess
 
 ### Security
 
-- NFR5: GitLab credentials (PAT/OAuth tokens) stored in platform Keychain (iOS Keychain / macOS Keychain)
+- NFR5: GitLab credentials (PAT/OAuth tokens) stored encrypted on server (AES-256 or equivalent)
 - NFR6: Credentials never logged or transmitted in plain text
 - NFR7: Server-to-device communication secured via TLS
 - NFR8: Device tokens and watch list data protected at rest on server
@@ -470,12 +444,12 @@ The MVP scope (7 features) directly maps to the 6 user journeys with no unnecess
 ### Integration
 
 - NFR9: GitLab API integration handles rate limiting gracefully (backoff, retry)
-- NFR10: APNs integration follows Apple best practices for token refresh and error handling
+- NFR10: ntfy.sh integration handles delivery errors gracefully (retry with backoff, fallback to cached topic)
 - NFR11: System detects and reports GitLab API authentication failures (credential expiry)
 
 ### Resource Efficiency
 
-- NFR12: Follow iOS/macOS battery optimization best practices
+- NFR12: PWA minimizes client-side resource usage (server handles all polling)
 - NFR13: Minimize background network activity (server handles polling, not client)
 - NFR14: Local storage footprint appropriate for notification history scope
 
